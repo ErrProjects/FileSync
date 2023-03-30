@@ -9,6 +9,7 @@ class BaseClass:
     def From_Bytes(bytes_data):
         return pickle.loads(bytes_data)
 
+
 class FS_File(BaseClass):
     def __init__(self, _filename = None, _filecontent = None) -> None:
         self.filename: None | str = _filename
