@@ -1,5 +1,7 @@
 import math
+import os
 import pickle
+import socket
 import struct
 import zlib
 
@@ -88,3 +90,35 @@ class FS_Object:
     def set_dest_ip_with_alias(self, _dest_ip_addr = None, _dest_alias = None):
         self.dest_ip_addr = _dest_ip_addr
         self.dest_alias = _dest_alias
+
+class Logging:
+    DEFAULT = ("[Default]", "\033[0;32m")
+    WARNING = ("[Warning]", "\033[0;33m")
+    ERROR = ("[Error]", "\033[0;31m")
+
+    def log(log_msg, severity):
+        print(severity[1] + f"{severity[0]} - {log_msg}" + "\033[0;37m")
+
+
+class FS_FileSearch:
+    def parse_fsignore_file(_filepath):
+        ignored_dirs = []
+        ignored_files = []
+        ignored_ext = []
+
+    def search_files(curr_dir_only=False):
+        os_walk_res = []
+        
+        for root, dirs, files in os.walk('.', topdown=True):
+            os_walk_res = files
+            break
+        
+        if not curr_dir_only:
+            for root, dirs, files in os.walk('.', topdown=True):
+                if root == '.':
+                    continue
+                
+                for file in files:
+                    os_walk_res.append(os.path.join(root, file))
+        
+        return os_walk_res
