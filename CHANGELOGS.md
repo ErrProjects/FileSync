@@ -6,7 +6,7 @@ v2
 - added proper exception handlers
 - allows for repeated sending and receiving files without restarting application (Client will need to be reopened if files entered are sent)
 
-v2.1 (Expected Changes) (In Development)
+v2.1 (Expected Changes) (In Testing Phase)
 - change architecture for client and server
 - switching from udp to tcp connections for easier implementation
 - added * and . for easier file inclusion
