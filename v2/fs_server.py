@@ -1,77 +1,147 @@
-from fs_lib import FS_File, FileSyncStatus, NetworkDataTransformer, ask_user_for_server_client_setup
+from fs_lib.fs_aux_classes import Logging, FS_FileHandler
+from fs_lib.fs_consts import FileSyncRequests, FileSyncStatus
+from fs_lib.fs_funcs import segments_to_fs_object
+from fs_lib.fs_models import FS_Object
 import socket
-import os
+import threading
+
+
+class FSSClient:
+    def __init__(self, _conn: socket.socket, _addr: tuple) -> None:
+        self.conn = _conn
+        self.addr = _addr
+        self.alias = _addr
+        self.group = 'group'
+
+    def get_conn(self) -> socket.socket:
+        return self.conn
+    
+    def get_addr(self) -> tuple:
+        return self.addr
+    
+    def set_alias(self, _new_alias: str):
+        self.alias = _new_alias
+    
+    def get_alias(self) -> str:
+        return self.alias
+
 
 class FileSyncServer:
-    def __init__(self, server_info) -> None:
-        self.MAX_SIZE = (2 ** 16) - 64
-        self.server_info = server_info
+    def __init__(self, _server_info) -> None:
+        self.server_info = _server_info                 # The information needed to set up this server
+        self.client_list: list[FSSClient] = []          # List of clients currently connected to the network
+        self.MAX_SIZE = 2 ** 20
 
-        self.check_if_flag = lambda data, status : data.decode('utf-8') == str(status)
+        self.check_flag = lambda data, status : data.decode('utf-8') == str(status)
+
+        # Initialize Sender and Receiver
+        self.file_handler = FS_FileHandler(self.MAX_SIZE)
     
-    def receive_files(self):
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+    def start_server(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt( socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+
+        try:
+            # Bind Server Info
             sock.bind(self.server_info)
-            self.log_handler(f'Server up on {self.server_info} [UDP]')
 
-            # Run Loop To Keep Receiving Files
+            # Server Log Binded Info
+            Logging.log(
+                f"FileSyncServer is running at {self.server_info}",
+                Logging.DEFAULT
+            )
+
+            # Listen and Accept Clients
+            sock.listen()
+
             while True:
-                self.recv_file_sync(sock)
+                conn, addr = sock.accept()
+
+                Logging.log(
+                    f"New Connection at {addr}",
+                    Logging.DEFAULT
+                )
+
+                # Create new client object for connecting clients
+                client_obj = FSSClient(conn, addr)
+                self.client_list.append(client_obj)
+
+                # Handle client on new thread
+                t = threading.Thread(target=self.handle_client, args=(client_obj,))
+                t.start()
+
+        except Exception as ex:
+            Logging.log(
+                f"Server running at {self.server_info} had encountered an exception: {ex}",
+                Logging.ERROR
+            )
     
-    def recv_file_sync(self, sock_inst: socket.socket):
-        # List of FS segments
-        segment_list = []
+        # Close Socket 
+        sock.close()
 
-        # Loop to get all bytes of data
-        while True:
-            # Receive Contents from client
-            data, addr = sock_inst.recvfrom(self.MAX_SIZE)
+    def handle_client(self, client_obj: FSSClient):
+        try:
+            while True:
+                # Receive Data from Client
+                # Turn Segments to FS_Object
+                fs_obj: FS_Object = segments_to_fs_object(client_obj.get_conn(), self.MAX_SIZE)
 
-            # Send Acknowledgment if received
-            sock_inst.sendto(bytes(str(FileSyncStatus.RECEIVED).encode('utf-8')), addr)
+                # Handle Client Requests
+                client_req = fs_obj.request
 
-            # Skip if Sent Bytes is too long (May not be a flag)
-            if len(data) <= 2:
-                # Reset seglist if Reset Flag is sent
-                if self.check_if_flag(data, FileSyncStatus.RESET):
-                    segment_list.clear()
-                    continue
+                if client_req == FileSyncRequests.CHANGE_ALIAS:
+                    # Set New Alias
+                    client_obj.set_alias(fs_obj.payload)
 
-                # Break if sent data is Finished Flag
-                if self.check_if_flag(data, FileSyncStatus.FINISHED):
-                    break
+                elif client_req == FileSyncRequests.SEND_FILE:
+                    # Determine Destination
+                    status_code, dest_client_obj = self._determine_dest_client_obj(fs_obj.dest_ip_addr, fs_obj.dest_alias)
 
-            # Add File Segment to list
-            if data is not None:
-                segment_list.append(data)
-
-        # Show Log
-        self.log_handler("New File Received")
-
-        # Process File
-        self.write_to_current_dir(segment_list)
+                    if dest_client_obj is not None:
+                        self.file_handler.send_data(dest_client_obj.get_conn(), fs_obj)
+                    else:
+                        Logging.log(
+                            f"Error Occurred: Invalid Ip Address, Status Code {status_code}",
+                            Logging.WARNING
+                        )
+                    
+        except Exception as ex:
+            Logging.log(
+                f"Client [Alias: {client_obj.get_alias()}, Addr: {client_obj.get_addr()}] was disconnected due to: {ex}",
+                Logging.ERROR
+            )
+        
+        Logging.log(
+            f"Client [Alias: {client_obj.get_alias()}, Addr: {client_obj.get_addr()}] Connection Ended",
+            Logging.DEFAULT
+        )
+        self.client_list.remove(client_obj)
+        Logging.log(
+            f'Remaining Clients Connected: {len(self.client_list)}',
+            Logging.DEFAULT
+        )
     
-    def write_to_current_dir(self, segment_list):
-        # Parse seglist into FS File
-        fs_file_bytes = NetworkDataTransformer.segments_to_bytes(segment_list, self.MAX_SIZE)
-        fs_file_obj = FS_File.From_Bytes(fs_file_bytes)
+    def _determine_dest_client_obj(self, obj_dest_ip = None, obj_dest_alias = None) -> FSSClient:
 
-        # Generate path for destination and check if it exists, create file if it does not exist
-        full_path = os.path.join(os.getcwd(), fs_file_obj.filename)
-        if not os.path.exists(full_path):
-            new_file = open(full_path, 'x')
-            new_file.close()
-            
-        # Overwrite file content
-        with open(full_path, 'wb') as file_obj:
-            file_obj.write(fs_file_obj.filecontent)
+        if obj_dest_ip is None and obj_dest_alias is None:
+            return FileSyncStatus.ERR_DEST_ADDR, None
+        
+        if obj_dest_ip is None and len(self.client_list) == 0:
+            return FileSyncStatus.ERR_DEST_ADDR, None
+        
+        dest_client_obj = None
 
-    def log_handler(self, log):
-        print(log)
+        for client_obj in self.client_list:
+            if obj_dest_ip is not None and obj_dest_ip == client_obj.get_addr()[0]:
+                dest_client_obj = client_obj
+                break
+            if obj_dest_alias is not None and obj_dest_alias == client_obj.get_alias():
+                dest_client_obj = client_obj
+                break
 
-if __name__ == "__main__":
-    ip_addr, port = ask_user_for_server_client_setup()
-    fs_server = FileSyncServer((ip_addr, port))
+        if dest_client_obj is None:
+            return FileSyncStatus.ERR_DEST_ADDR, None
 
-    #os.system('cls')
-    fs_server.receive_files()
+        return FileSyncStatus.SUCCESS, dest_client_obj
+
+

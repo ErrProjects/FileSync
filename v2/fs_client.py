@@ -1,98 +1,112 @@
-from fs_lib import FS_File, FileSyncStatus, NetworkDataTransformer, ask_user_for_server_client_setup
-import math
+from fs_lib.fs_aux_classes import Logging, FS_FileHandler, FS_FileSearch
+from fs_lib.fs_consts import FileSyncRequests, FileSyncOperation
+from fs_lib.fs_funcs import segments_to_fs_object
+from fs_lib.fs_models import FS_Object, FS_File
 import socket
-import struct
-import zlib
-import os
+import threading
 
 class FileSyncClient:
-    def __init__(self, server_info) -> None:
-        self.MAX_SIZE = (2 ** 16) - 64
+    def __init__(self) -> None:
+        self.MAX_SIZE = 2 ** 20
+
+        # Initialize Sender and Receiver
+        self.file_handler = FS_FileHandler(self.MAX_SIZE)
+    
+    def connect_to_server(self, server_info):
         self.server_info = server_info
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-    def prepare_and_send_files(self, files_list):
-        # Get File(s) from current directory where this program is executed, will be receiving FS_File in bytes
-        fs_files_bytes = self.retrieve_files(files_list)
+        try:
+            # Connect to Server
+            Logging.log(
+                f"Connecting to Server {self.server_info}",
+                Logging.DEFAULT
+            )
+            self.sock.connect(self.server_info)
 
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.settimeout(1)
-            self.log_handler(f"Client is Listening at { self.server_info } [UDP]")
+        except Exception as ex:
+            Logging.log(
+                f"Exception detected: {ex}",
+                Logging.ERROR
+            )
+    
+    def close_connection(self):
+        Logging.log(
+            f"Closing Connection to {self.server_info}",
+            Logging.DEFAULT
+        )
+        self.sock.close()
+
+    def handle_sending(self, dest_addr_or_alias: str, request: int, payload: str):
+        if request == FileSyncRequests.CHANGE_ALIAS:
+            self._send_msg(payload, dest_addr_or_alias)
+        elif request == FileSyncRequests.SEND_FILE:
+            self._send_files(payload, dest_addr_or_alias)
+    
+    def _send_msg(self, message: str, dest_addr_or_alias: str):
+        # Create FS_Object
+        fs_obj = FS_Object()
+        fs_obj.set_request(FileSyncRequests.CHANGE_ALIAS)
+        fs_obj.set_payload(message)
+        fs_obj.set_dest_ip_with_alias(dest_addr_or_alias, dest_addr_or_alias)
+
+        # Send FS_Object
+        self.file_handler.send_data(self.sock, fs_obj)
+    
+    def _send_files(self, files_collection_str: str, dest_addr_or_alias: str):
+        # Turn file_collection_str to proper list
+        # Check for special symbols, if none found, check for file names/paths that are comma-separated
+        filepaths_list = []
+        if files_collection_str == "*":
+            filepaths_list = FS_FileSearch.search_files()
+        elif files_collection_str == ".":
+            filepaths_list = FS_FileSearch.search_files(curr_dir_only=True)
+        else:
+            files_collection = files_collection_str.split(',')
+            for files in files_collection:
+                filepaths_list.append(files.strip())
+        
+        fs_files_list: list[FS_File] = []
+        for filepath in filepaths_list:
+            # Get filecontent as bytes
+            filecontent = None
+            with open(filepath, 'rb') as rfile:
+                filecontent = rfile.read()
             
-            # Loop through fs_files
-            for ind, fs_file_byte in enumerate(fs_files_bytes):
-                while True:
-                    try:
-                        self.send_file_sync(sock, fs_file_byte)
-                        self.log_handler(f"Finished Sending File [{ind+1}]")
-                        break
-                    except:
-                        self.log_handler(f"Server had timed out, Resending File [{ind+1}]")
-                        continue
-
-    def retrieve_files(self, files_list):
-        self.log_handler(f"Searching files at { os.getcwd() }")
-
-        fs_files_bytes = []
-        for file in files_list:
-            # Construct file path
-            curr_path = os.path.join(os.getcwd(), file)
-
-            # Check file validity
-            if not (os.path.isfile(curr_path) and os.path.exists(curr_path)):
-                self.log_handler(f"File: { curr_path } is not found, given string may be malformed. [Skip File]")
-                continue
-
-            # Turn File into FS_File
-            data = None
-            with open(curr_path, 'rb') as rfile:
-                data = rfile.read()
-            fs_file_obj = FS_File(file, data)
-
-            # Turn FS_File obj to Bytes
-            fs_file_bytes = FS_File.To_Bytes(fs_file_obj)
+            # Turn to FS_File
+            fs_file = FS_File(FileSyncOperation.ADD, filepath, filecontent)
+            fs_files_list.append(fs_file)
+        
+        # Construct FS_Object
+        fs_obj = FS_Object()
+        fs_obj.set_request(FileSyncRequests.SEND_FILE)
+        fs_obj.set_payload(fs_files_list)
+        fs_obj.set_dest_ip_with_alias(dest_addr_or_alias, dest_addr_or_alias)
+        
+        # Send FS_Object
+        self.file_handler.send_data(self.sock, fs_obj)
             
-            # Add To List
-            fs_files_bytes.append(fs_file_bytes)
 
-        return fs_files_bytes
+    def handle_receiving(self):
+        try:
+            fs_obj = segments_to_fs_object(self.sock, self.MAX_SIZE)
 
-    def send_file_sync(self, sock_inst: socket.socket, fs_file_byte):
-        # Transform fs_file_byte to segments
-        fs_file_segments = NetworkDataTransformer.bytes_to_segments(fs_file_byte, self.MAX_SIZE)
+            # Push to receiver
+            fs_obj = self.file_handler.receive_file(fs_obj)
+            
+            # Return get files
+            fs_files_list = fs_obj.payload
 
-        # Send Reset Flag to Server
-        print(self.server_info)
-        sock_inst.sendto(str(FileSyncStatus.RESET).encode('utf-8'), self.server_info)
-
-        # Wait for Acknowledgement
-        data, addr = sock_inst.recvfrom(1024)
-
-        for fs_file_segment in fs_file_segments:
-            # Send segments
-            sock_inst.sendto(fs_file_segment, self.server_info)
-
-            # Wait For Acknowledgement Flag from Server
-            data, addr = sock_inst.recvfrom(1024)
+            # Loop filenames
+            str_ls = []
+            for fs_file in fs_files_list:
+                str_ls.append(f"New File Received {fs_file.filename}")
+            return str_ls
         
-        # Send Finished Flag
-        sock_inst.sendto(str(FileSyncStatus.FINISHED).encode('utf-8'), self.server_info)
-
-    def log_handler(self, log):
-        print(log)
-
-
-if __name__ == "__main__":
-    ip_addr, port = ask_user_for_server_client_setup()
-    fs_client = FileSyncClient((ip_addr, port))
-
-    files_list = []
-    while True:
-        files = input('Input Filename here or relative path: ').strip()
-        
-        if files is None or files == '':
-            break
-        
-        files_list.append(files)
-
-    os.system('cls')
-    fs_client.prepare_and_send_files(files_list)
+        except Exception as ex:
+            Logging.log(
+                f"{ex}",
+                Logging.ERROR
+            )
+        return ["Error, detected"]
+    
