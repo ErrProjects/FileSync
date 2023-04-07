@@ -1,16 +1,17 @@
-from fs_classes import Logging, ObjectTypeTransformer, NetworkDataTransformer, FS_Object
-from fs_consts import FileSyncStatus, FileSyncRequests
-from fs_sender import FileSyncSend
-from fs_receiver import FileSyncReceive
-
+from fs_lib.fs_aux_classes import Logging, FS_FileHandler
+from fs_lib.fs_consts import FileSyncRequests, FileSyncStatus
+from fs_lib.fs_funcs import segments_to_fs_object
+from fs_lib.fs_models import FS_Object
 import socket
 import threading
 
+
 class FSSClient:
-    def __init__(self, _conn, _addr) -> None:
+    def __init__(self, _conn: socket.socket, _addr: tuple) -> None:
         self.conn = _conn
         self.addr = _addr
         self.alias = _addr
+        self.group = 'group'
 
     def get_conn(self) -> socket.socket:
         return self.conn
@@ -18,11 +19,12 @@ class FSSClient:
     def get_addr(self) -> tuple:
         return self.addr
     
-    def set_alias(self, _new_alias):
+    def set_alias(self, _new_alias: str):
         self.alias = _new_alias
     
     def get_alias(self) -> str:
         return self.alias
+
 
 class FileSyncServer:
     def __init__(self, _server_info) -> None:
@@ -33,8 +35,7 @@ class FileSyncServer:
         self.check_flag = lambda data, status : data.decode('utf-8') == str(status)
 
         # Initialize Sender and Receiver
-        self.sender = FileSyncSend(self.MAX_SIZE)
-        self.receiver = FileSyncReceive(self.MAX_SIZE)
+        self.file_handler = FS_FileHandler(self.MAX_SIZE)
     
     def start_server(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -57,7 +58,7 @@ class FileSyncServer:
                 conn, addr = sock.accept()
 
                 Logging.log(
-                    f"New Connection at {addr[0]}",
+                    f"New Connection at {addr}",
                     Logging.DEFAULT
                 )
 
@@ -66,7 +67,7 @@ class FileSyncServer:
                 self.client_list.append(client_obj)
 
                 # Handle client on new thread
-                t = threading.Thread(target=self.handle_clients, args=(client_obj,))
+                t = threading.Thread(target=self.handle_client, args=(client_obj,))
                 t.start()
 
         except Exception as ex:
@@ -74,18 +75,16 @@ class FileSyncServer:
                 f"Server running at {self.server_info} had encountered an exception: {ex}",
                 Logging.ERROR
             )
-        
+    
+        # Close Socket 
         sock.close()
 
-    def handle_clients(self, client_obj: FSSClient):
+    def handle_client(self, client_obj: FSSClient):
         try:
             while True:
                 # Receive Data from Client
-                segment_list = self.get_all_segments(client_obj)
-
                 # Turn Segments to FS_Object
-                fs_obj_bytes = NetworkDataTransformer.Segments_To_Bytes(segment_list, self.MAX_SIZE)
-                fs_obj: FS_Object = ObjectTypeTransformer.From_Bytes(fs_obj_bytes)
+                fs_obj: FS_Object = segments_to_fs_object(client_obj.get_conn(), self.MAX_SIZE)
 
                 # Handle Client Requests
                 client_req = fs_obj.request
@@ -96,10 +95,10 @@ class FileSyncServer:
 
                 elif client_req == FileSyncRequests.SEND_FILE:
                     # Determine Destination
-                    status_code, dest_client_obj = self.determine_dest_client_obj(fs_obj.dest_ip_addr, fs_obj.dest_alias)
+                    status_code, dest_client_obj = self._determine_dest_client_obj(fs_obj.dest_ip_addr, fs_obj.dest_alias)
 
                     if dest_client_obj is not None:
-                        self.sender.send_data(dest_client_obj.get_conn(), fs_obj)
+                        self.file_handler.send_data(dest_client_obj.get_conn(), fs_obj)
                     else:
                         Logging.log(
                             f"Error Occurred: Invalid Ip Address, Status Code {status_code}",
@@ -111,32 +110,15 @@ class FileSyncServer:
                 f"Client [Alias: {client_obj.get_alias()}, Addr: {client_obj.get_addr()}] was disconnected due to: {ex}",
                 Logging.ERROR
             )
+            print(f"Clients Connected: {len(self.client_list)}")
         
         Logging.log(
             f"Client [Alias: {client_obj.get_alias()}, Addr: {client_obj.get_addr()}] Connection Ended",
             Logging.DEFAULT
         )
         self.client_list.remove(client_obj)
-
-    def get_all_segments(self, client_obj: FSSClient):
-        segment_list = []
-            
-        while True:
-            data = client_obj.get_conn().recv(self.MAX_SIZE)
-            
-            if len(data) == 0:
-                raise Exception("No Data Received")
-
-            if len(data) <= 2:
-                if self.check_flag(data, FileSyncStatus.FINISHED):
-                    break
-                elif self.check_flag(data, FileSyncStatus.RESET):
-                    segment_list.clear()
-            segment_list.append(data)
-            
-        return segment_list
-
-    def determine_dest_client_obj(self, obj_dest_ip = None, obj_dest_alias = None) -> FSSClient:
+    
+    def _determine_dest_client_obj(self, obj_dest_ip = None, obj_dest_alias = None) -> FSSClient:
 
         if obj_dest_ip is None and obj_dest_alias is None:
             return FileSyncStatus.ERR_DEST_ADDR, None
@@ -158,3 +140,5 @@ class FileSyncServer:
             return FileSyncStatus.ERR_DEST_ADDR, None
 
         return FileSyncStatus.SUCCESS, dest_client_obj
+
+

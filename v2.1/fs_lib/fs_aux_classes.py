@@ -4,8 +4,10 @@ import pickle
 import socket
 import struct
 import zlib
+from fs_lib.fs_consts import FileSyncStatus, FileSyncOperation
+from fs_lib.fs_models import FS_Object, FS_File
 
-class ObjectTypeTransformer:
+class ObjectDataTransformer:
     @staticmethod
     def To_Bytes(object) -> bytes:
         return pickle.dumps(object)
@@ -60,36 +62,6 @@ class NetworkDataTransformer:
         # Send Back Bytes
         return decompressed_bytes
 
-class FS_File:
-    def __init__(self, _operation = None, _filename = None, _filecontent = None) -> None:
-        self.operation: None | int = _operation
-        self.filename: None | str = _filename
-        self.filecontent: None | bytes = _filecontent
-
-    def set_filename(self, _filename):
-        self.filename = _filename
-    
-    def set_filecontent(self, _filecontent):
-        self.filecontent = _filecontent
-
-class FS_Object:
-    def __init__(self) -> None:
-        self.request: None | int = None
-        self.payload: None | str | FS_File = None
-
-        # For Sending File
-        self.dest_ip_addr: None | str = None
-        self.dest_alias: None | str = None
-    
-    def set_request(self, _req: int):
-        self.request = _req
-    
-    def set_payload(self, _payload: str | FS_File):
-        self.payload = _payload
-    
-    def set_dest_ip_with_alias(self, _dest_ip_addr = None, _dest_alias = None):
-        self.dest_ip_addr = _dest_ip_addr
-        self.dest_alias = _dest_alias
 
 class Logging:
     DEFAULT = ("[Default]", "\033[0;32m")
@@ -101,11 +73,6 @@ class Logging:
 
 
 class FS_FileSearch:
-    def parse_fsignore_file(_filepath):
-        ignored_dirs = []
-        ignored_files = []
-        ignored_ext = []
-
     def search_files(curr_dir_only=False):
         os_walk_res = []
         
@@ -122,3 +89,42 @@ class FS_FileSearch:
                     os_walk_res.append(os.path.join(root, file))
         
         return os_walk_res
+
+
+class FS_FileHandler:
+    def __init__(self, _max_size) -> None:
+        self.max_size = _max_size
+        self.get_ip = socket.gethostbyname(socket.gethostname())
+    
+    def send_data(self, sock_inst: socket.socket, fs_obj: FS_Object) -> int:
+        # Package FS_Object to bytes
+        fs_obj_bytes = ObjectDataTransformer.To_Bytes(fs_obj)
+        fs_obj_segments = NetworkDataTransformer.Bytes_To_Segments(fs_obj_bytes, self.max_size)
+        
+        # Send segments
+        for segment in fs_obj_segments:
+            sock_inst.sendall(segment)
+        
+        # Send FINISHED Flag
+        sock_inst.sendall(str(FileSyncStatus.FINISHED).encode('utf-8'))
+    
+    def receive_file(self, fs_obj: FS_Object):
+        # Check if this is the final destination of fs_obj via IP comparison
+        # If true, perform place_on_dir, Otherwise, return back fs_obj
+        if fs_obj.dest_ip_addr == self.get_ip or True:
+            self.place_on_dir(fs_obj.payload)
+        return fs_obj
+
+    def place_on_dir(self, fs_files_list: list[FS_File]):
+        for fs_file in fs_files_list:
+            # Determine correct operation for file and apply such operation
+            fs_file_op = fs_file.operation
+
+            if fs_file_op == FileSyncOperation.ADD:
+                dirs_file_path = os.path.dirname(fs_file.filename)
+                if dirs_file_path != '':
+                    os.makedirs(dirs_file_path, exist_ok=True)
+                with open(fs_file.filename, 'wb') as add_file:
+                    add_file.write(fs_file.filecontent)
+            elif fs_file_op == FileSyncOperation.REMOVE:
+                os.remove(fs_file.filename)

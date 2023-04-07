@@ -1,12 +1,9 @@
 from fs_client import FileSyncClient
-from fs_classes import Logging
-
-import threading
+from fs_lib.fs_aux_classes import Logging
+from fs_lib.fs_consts import FileSyncRequests
 import tkinter as tk
 import tkinter.font as tkFont
-import os
-
-from fs_consts import FileSyncRequests
+import threading
 
 # Created from: https://visualtk.com/
 class App:
@@ -84,41 +81,47 @@ class App:
     def Send_Btn_Fn(self):
         try:
             # Get User Input
-            # DEST || REQUEST || PAYLOAD
             input_str = self.UserInput.get().strip()
-            tokens = input_str.split("||")
 
-            # Check if valid input
-            if len(tokens) != 3:
-                Logging.log(
-                    "Invalid Input",
-                    Logging.WARNING
-                )
+            self.Parse_Request(input_str)
             
-            # Fix request and send to fs_client
-            dest_addr_or_alias, request, payload = tokens
-            if request.strip() == "CHANGE-ALIAS":
-                client_obj.handle_sending(dest_addr_or_alias.strip(), FileSyncRequests.CHANGE_ALIAS, payload.strip())
-            elif request.strip() == "SEND-FILE":
-                client_obj.handle_sending(dest_addr_or_alias.strip(), FileSyncRequests.SEND_FILE, payload.strip())
         except Exception as ex:
             Logging.log(
                 f"Exception occurred: {ex}",
                 Logging.ERROR
             )
+    
+    def Parse_Request(self, request_input: str):
+        m_tokens = request_input.split('||')
+
+        if len(m_tokens) != 2:
+            Logging.log(f"Invalid Request", Logging.WARNING)
+            return
+        
+        if m_tokens[0].strip() == "SetAlias":
+            self.client_obj.handle_sending('', FileSyncRequests.CHANGE_ALIAS, m_tokens[1].strip())
+
+        elif m_tokens[0].strip() == "SendFile":
+            sub_tokens = m_tokens[1].split('>>')
+            if len(sub_tokens) != 2:
+                Logging.log(f"Invalid SendFile Request", Logging.WARNING)
+                return
+            self.client_obj.handle_sending(sub_tokens[0].strip(), FileSyncRequests.SEND_FILE, sub_tokens[1].strip())
+        
+        self.MessageBox.insert(tk.END, f"[From Client] {request_input}")
         
     def Update_MessageBox(self):
         while True:
-            res = self.client_obj.handle_receiving()
-            self.MessageBox.insert(tk.END, res)
-            break
+            res_ls = self.client_obj.handle_receiving()
+            for res in res_ls:
+                self.MessageBox.insert(tk.END, f"[From Server] {res}")
     
 
 
 
 if __name__ == "__main__":
     client_obj = FileSyncClient()
-    client_obj.connect_to_server(('127.0.0.1', 9999))
+    client_obj.connect_to_server(('192.168.1.4', 9999))
 
     root = tk.Tk()
     app = App(root, client_obj)
