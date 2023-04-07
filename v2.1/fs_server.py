@@ -110,13 +110,16 @@ class FileSyncServer:
                 f"Client [Alias: {client_obj.get_alias()}, Addr: {client_obj.get_addr()}] was disconnected due to: {ex}",
                 Logging.ERROR
             )
-            print(f"Clients Connected: {len(self.client_list)}")
         
         Logging.log(
             f"Client [Alias: {client_obj.get_alias()}, Addr: {client_obj.get_addr()}] Connection Ended",
             Logging.DEFAULT
         )
         self.client_list.remove(client_obj)
+        Logging.log(
+            f'Remaining Clients Connected: {len(self.client_list)}',
+            Logging.DEFAULT
+        )
     
     def _determine_dest_client_obj(self, obj_dest_ip = None, obj_dest_alias = None) -> FSSClient:
 
