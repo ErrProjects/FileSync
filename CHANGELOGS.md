@@ -15,6 +15,6 @@ v2.1 (Expected Changes) (Future Development)
 - add groups
 - break down payload in FS_Object to handle appropriate amount of files without putting too much load
 
-v2.2 (Expected Changes) (Future Development)
+v2.2 (Future Development)
 - add live file(s) syncing
 - add .fsignore (ignore files in syncing)
