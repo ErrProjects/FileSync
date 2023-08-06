@@ -9,10 +9,10 @@ v1.1
 v2
 - change architecture for client and server
 - switching from udp to tcp connections for easier implementation
-- added * and . for easier file inclusion
 
 v2.1 (Expected Changes) (Future Development)
 - add groups
+- added * and . for easier file inclusion
 - break down payload in FS_Object to handle appropriate amount of files without putting too much load
 
 v2.2 (Future Development)
